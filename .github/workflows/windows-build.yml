@@ -1,5 +1,5 @@
 
-name: Build Windows App
+name: Build and Test Windows App
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
       - main
 
 jobs:
-  build:
+  build-and-test:
     runs-on: windows-latest
 
     steps:
@@ -29,12 +29,98 @@ jobs:
       - name: Build Windows installer
         run: npm run tauri -- build
 
+      - name: Install the application silently
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem `
+            "src-tauri/target/release/bundle/nsis" `
+            -Filter "*.exe" |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            throw "Windows NSIS installer was not found."
+          }
+
+          "Installer: $($installer.FullName)" |
+            Out-File ui-test-log.txt
+
+          Start-Process `
+            -FilePath $installer.FullName `
+            -ArgumentList "/S" `
+            -Wait
+
+          Start-Sleep -Seconds 3
+
+      - name: Launch and check the installed app
+        shell: pwsh
+        run: |
+          $appDirs = Get-ChildItem "$env:LOCALAPPDATA" `
+            -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*bamboo-project-2*" }
+
+          $appExe = $appDirs |
+            ForEach-Object {
+              Get-ChildItem $_.FullName `
+                -Filter "*.exe" -Recurse `
+                -ErrorAction SilentlyContinue
+            } |
+            Where-Object {
+              $_.Name -ne "uninstall.exe"
+            } |
+            Select-Object -First 1
+
+          if (-not $appExe) {
+            "ERROR: Installed application executable not found." |
+              Out-File ui-test-log.txt -Append
+            throw "Could not find the installed app."
+          }
+
+          "Application: $($appExe.FullName)" |
+            Out-File ui-test-log.txt -Append
+
+          $app = Start-Process `
+            -FilePath $appExe.FullName -PassThru
+
+          Start-Sleep -Seconds 15
+          $app.Refresh()
+
+          "Process ID: $($app.Id)" |
+            Out-File ui-test-log.txt -Append
+
+          "Process exited: $($app.HasExited)" |
+            Out-File ui-test-log.txt -Append
+
+          if ($app.HasExited) {
+            throw "Application exited within 15 seconds."
+          }
+
+          "PASS: Application remained running for 15 seconds." |
+            Out-File ui-test-log.txt -Append
+
+      - name: Capture desktop screenshot
+        if: always()
+        uses: OrbitalOwen/desktop-screenshot-action@0.1
+        with:
+          file-name: bamboo-project-2-desktop.jpg
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bamboo-project-2-ui-evidence
+          path: |
+            bamboo-project-2-desktop.jpg
+            ui-test-log.txt
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload Windows installer
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bamboo-project-2-windows-installer
           path: |
             src-tauri/target/release/bundle/**/*.exe
             src-tauri/target/release/bundle/**/*.msi
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
